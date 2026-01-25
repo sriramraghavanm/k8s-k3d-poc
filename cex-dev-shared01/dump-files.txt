@@ -1,0 +1,730 @@
+---- cluster/outputs.tf
+output "cluster_name" {
+  description = "Name of the created k3d cluster"
+  value       = local.cluster_name
+}
+
+output "cluster_context" {
+  description = "Kubectl context name"
+  value       = "k3d-${local.cluster_name}"
+}
+
+output "api_endpoint" {
+  description = "Kubernetes API endpoint"
+  value       = "https://0.0.0.0:${var.api_port}"
+}
+
+output "registry_endpoint" {
+  description = "Local registry endpoint"
+  value       = var.enable_registry ? "localhost:${var.registry_port}" : "Registry not enabled"
+}
+
+output "kubeconfig_path" {
+  description = "Path to kubeconfig file"
+  value       = "~/.kube/config"
+}
+
+---- cluster/main.tf
+locals {
+  cluster_name = var.cluster_name
+}
+
+# Ensure .kube directory exists
+resource "null_resource" "ensure_kube_dir" {
+  provisioner "local-exec" {
+    command = "mkdir -p ~/.kube"
+  }
+}
+
+# Create k3d cluster
+resource "null_resource" "k3d_cluster" {
+  depends_on = [null_resource.ensure_kube_dir]
+  
+  triggers = {
+    cluster_name = local.cluster_name
+    servers      = var.server_count
+    agents       = var.agent_count
+    api_port     = var.api_port
+    lb_http_port = var.lb_http_port
+    lb_https_port = var.lb_https_port
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -euo pipefail
+      echo "Creating k3d cluster: ${local.cluster_name}"
+
+      # Remove any existing cluster with the same name
+      k3d cluster delete ${local.cluster_name} || true
+
+      # Ensure persistent volume path exists on host
+      mkdir -p "${var.persistent_volume_path}"
+
+      # If registry is enabled, ensure the requested port is free
+      if [ "${var.enable_registry}" = "true" ]; then
+        if command -v lsof >/dev/null 2>&1; then
+          if lsof -nP -iTCP:${var.registry_port} -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "ERROR: registry port ${var.registry_port} is already in use. Choose another port or stop the service using it." >&2
+            exit 1
+          fi
+        else
+          echo "Warning: 'lsof' not found; skipping registry port availability check"
+        fi
+      fi
+
+      # Build explicit port mapping args for the k3d command
+      HTTP_PORT_ARG="--port '${var.lb_http_port}:80@loadbalancer'"
+      HTTPS_PORT_ARG="--port '${var.lb_https_port}:443@loadbalancer'"
+      REGISTRY_ARG=""
+      if [ "${var.enable_registry}" = "true" ]; then
+        REGISTRY_ARG="--registry-create ${local.cluster_name}-registry:0.0.0.0:${var.registry_port}"
+      fi
+
+      # Create the cluster (use eval so the assembled args with quotes are interpreted correctly)
+      eval k3d cluster create "${local.cluster_name}" \
+        --api-port ${var.api_port} \
+        --servers ${var.server_count} \
+        --agents ${var.agent_count} \
+        $${HTTP_PORT_ARG} \
+        $${HTTPS_PORT_ARG} \
+        --volume "${var.persistent_volume_path}:/var/lib/rancher/k3s/storage@all" \
+        --k3s-arg "--disable=traefik@server:*" \
+        --k3s-arg "--disable=servicelb@server:*" \
+        $${REGISTRY_ARG} \
+        --wait
+
+      echo "Cluster created. Setting up kubeconfig..."
+
+      # Explicitly get kubeconfig for this cluster only
+      k3d kubeconfig get "${local.cluster_name}" > ~/.kube/config.k3d.${local.cluster_name}
+
+      # Merge kubeconfig properly (flatten) or move if no existing kubeconfig
+      if [ -f ~/.kube/config ]; then
+        export KUBECONFIG=~/.kube/config:~/.kube/config.k3d.${local.cluster_name}
+        kubectl config view --flatten > ~/.kube/config.temp
+        mv ~/.kube/config.temp ~/.kube/config
+      else
+        mv ~/.kube/config.k3d.${local.cluster_name} ~/.kube/config
+      fi
+
+      # Use the correct context name created by k3d
+      kubectl config use-context "k3d-${local.cluster_name}"
+
+      echo "Waiting for cluster to be ready..."
+      kubectl --context "k3d-${local.cluster_name}" wait --for=condition=Ready nodes --all --timeout=300s
+
+      echo "Cluster created successfully!"
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = <<-EOT
+      echo "Deleting k3d cluster: ${self.triggers.cluster_name}"
+      k3d cluster delete ${self.triggers.cluster_name} || true
+      rm -f ~/.kube/config.k3d.${self.triggers.cluster_name}
+    EOT
+  }
+}
+
+# Update verify step to use the k3d- prefixed context
+resource "null_resource" "verify_cluster" {
+  depends_on = [null_resource.k3d_cluster]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Verifying cluster access..."
+      kubectl config use-context "k3d-${local.cluster_name}"
+      kubectl cluster-info
+      kubectl --context "k3d-${local.cluster_name}" get nodes
+      echo "Verification successful!"
+    EOT
+  }
+}
+---- cluster/versions.tf
+terraform {
+  required_version = ">= 1.13.0"
+  
+  required_providers {
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
+  }
+}
+---- cluster/terraform.tfvars
+cluster_name           = "cex-dev-shared01"
+server_count           = 3
+agent_count            = 3
+api_port               = 6443
+lb_http_port           = 8081
+lb_https_port          = 8443
+enable_registry        = true
+registry_port          = 5010
+persistent_volume_path = "/tmp/k3d-cex-dev-shared01-storage"
+
+---- cluster/variables.tf
+variable "cluster_name" {
+  description = "Name of the k3d cluster"
+  type        = string
+  default     = "cex-dev-shared01"
+}
+
+variable "server_count" {
+  description = "Number of server nodes (control plane)"
+  type        = number
+  default     = 3
+}
+
+variable "agent_count" {
+  description = "Number of agent nodes (workers)"
+  type        = number
+  default     = 3
+}
+
+variable "api_port" {
+  description = "API server port"
+  type        = number
+  default     = 6443
+}
+
+variable "lb_http_port" {
+  description = "Load balancer HTTP port"
+  type        = number
+  default     = 8081
+}
+
+variable "lb_https_port" {
+  description = "Load balancer HTTPS port"
+  type        = number
+  default     = 8443
+}
+
+variable "enable_registry" {
+  description = "Enable local container registry"
+  type        = bool
+  default     = true
+}
+
+variable "registry_port" {
+  description = "Local registry port"
+  type        = number
+  default     = 5010
+}
+
+variable "persistent_volume_path" {
+  description = "Host path for persistent volumes"
+  type        = string
+  default     = "/tmp/k3d-cex-dev-shared01-storage"
+}
+
+---- resources/outputs.tf
+output "namespaces_created" {
+  description = "List of created namespaces"
+  value       = [for ns in kubernetes_namespace.namespaces : ns.metadata[0].name]
+}
+
+output "resource_quotas" {
+  description = "Resource quotas per namespace"
+  value = {
+    for ns, quota in kubernetes_resource_quota. namespace_quotas : 
+    ns => quota.spec[0].hard
+  }
+}
+
+---- resources/main.tf
+locals {
+  common_labels = {
+    "managed-by"  = "terraform"
+    "environment" = "development"
+    "cluster"     = "k3d-${var.cluster_context}"
+  }
+}
+
+# Kubernetes provider configuration
+provider "kubernetes" {
+  config_path    = pathexpand("~/.kube/config")
+  config_context = "k3d-${var.cluster_context}"
+}
+
+provider "helm" {
+  kubernetes {
+    config_path    = pathexpand("~/.kube/config")
+    config_context = "k3d-${var.cluster_context}"
+  }
+}
+
+# Create namespaces with production best practices
+resource "kubernetes_namespace" "namespaces" {
+  for_each = toset(var.namespaces)
+
+  metadata {
+    name = each.value
+    
+    labels = merge(local.common_labels, {
+      "name"                                   = each.value
+      "pod-security.kubernetes.io/enforce"     = "restricted"
+      "pod-security.kubernetes.io/audit"       = "restricted"
+      "pod-security.kubernetes.io/warn"        = "restricted"
+    })
+    
+    annotations = {
+      "description" = "Namespace ${each.value} for CEX development environment"
+      "created-by"  = "terraform"
+      "team"        = "rtl-team"
+    }
+  }
+}
+
+# Resource Quotas for each namespace
+resource "kubernetes_resource_quota" "namespace_quotas" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace. namespaces]
+
+  metadata {
+    name      = "${each.value}-quota"
+    namespace = each.value
+    labels    = local.common_labels
+  }
+
+  spec {
+    hard = {
+      "requests.cpu"               = var.namespace_cpu_requests
+      "requests.memory"            = var.namespace_memory_requests
+      "limits.cpu"                 = var.namespace_cpu_limits
+      "limits.memory"              = var.namespace_memory_limits
+      "persistentvolumeclaims"     = "10"
+      "pods"                       = "50"
+      "services"                   = "20"
+      "services.loadbalancers"     = "5"
+      "services.nodeports"         = "5"
+      "configmaps"                 = "50"
+      "secrets"                    = "50"
+    }
+  }
+}
+
+# Limit Ranges for each namespace
+resource "kubernetes_limit_range" "namespace_limits" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace. namespaces]
+
+  metadata {
+    name      = "${each. value}-limits"
+    namespace = each.value
+    labels    = local.common_labels
+  }
+
+  spec {
+    limit {
+      type = "Pod"
+      max = {
+        cpu    = "4"
+        memory = "8Gi"
+      }
+      min = {
+        cpu    = "10m"
+        memory = "10Mi"
+      }
+    }
+    
+    limit {
+      type = "Container"
+      default = {
+        cpu    = "500m"
+        memory = "512Mi"
+      }
+      default_request = {
+        cpu    = "100m"
+        memory = "128Mi"
+      }
+      max = {
+        cpu    = "2"
+        memory = "4Gi"
+      }
+      min = {
+        cpu    = "10m"
+        memory = "10Mi"
+      }
+    }
+  }
+}
+
+# Network Policies - Default Deny All
+resource "kubernetes_network_policy" "default_deny_ingress" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace.namespaces]
+
+  metadata {
+    name      = "default-deny-ingress"
+    namespace = each.value
+    labels    = local.common_labels
+  }
+
+  spec {
+    pod_selector {}
+    policy_types = ["Ingress"]
+  }
+}
+
+resource "kubernetes_network_policy" "default_deny_egress" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace.namespaces]
+
+  metadata {
+    name      = "default-deny-egress"
+    namespace = each.value
+    labels    = local.common_labels
+  }
+
+  spec {
+    pod_selector {}
+    policy_types = ["Egress"]
+  }
+}
+
+# Allow DNS traffic
+resource "kubernetes_network_policy" "allow_dns" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace. namespaces]
+
+  metadata {
+    name      = "allow-dns"
+    namespace = each. value
+    labels    = local. common_labels
+  }
+
+  spec {
+    pod_selector {}
+    policy_types = ["Egress"]
+    
+    egress {
+      to {
+        namespace_selector {
+          match_labels = {
+            "kubernetes.io/metadata.name" = "kube-system"
+          }
+        }
+      }
+      
+      ports {
+        protocol = "UDP"
+        port     = "53"
+      }
+      ports {
+        protocol = "TCP"
+        port     = "53"
+      }
+    }
+  }
+}
+
+# Service Accounts
+resource "kubernetes_service_account" "namespace_sa" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace. namespaces]
+
+  metadata {
+    name      = "${each.value}-sa"
+    namespace = each.value
+    labels    = local.common_labels
+    annotations = {
+      "description" = "Service account for ${each.value} namespace"
+    }
+  }
+}
+
+# RBAC Roles
+resource "kubernetes_role" "namespace_admin" {
+  for_each = toset(var.namespaces)
+  
+  depends_on = [kubernetes_namespace.namespaces]
+
+  metadata {
+    name      = "${each.value}-admin"
+    namespace = each. value
+    labels    = local. common_labels
+  }
+
+  rule {
+    api_groups = ["", "apps", "batch", "extensions"]
+    resources  = ["*"]
+    verbs      = ["*"]
+  }
+  
+  rule {
+    api_groups = ["networking.k8s.io"]
+    resources  = ["networkpolicies", "ingresses"]
+    verbs      = ["*"]
+  }
+}
+
+# Install NGINX Ingress Controller
+resource "helm_release" "nginx_ingress" {
+  name             = "ingress-nginx"
+  repository       = "https://kubernetes.github.io/ingress-nginx"
+  chart            = "ingress-nginx"
+  namespace        = "ingress-nginx"
+  version          = "4.8.3"
+  create_namespace = true
+
+  values = [yamlencode({
+    controller = {
+      service = {
+        type = "NodePort"
+      }
+      metrics = {
+        enabled = true
+      }
+      resources = {
+        requests = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+        limits = {
+          cpu    = "500m"
+          memory = "512Mi"
+        }
+      }
+    }
+  })]
+}
+
+# Install cert-manager
+resource "helm_release" "cert_manager" {
+  name             = "cert-manager"
+  repository       = "https://charts.jetstack.io"
+  chart            = "cert-manager"
+  namespace        = "cert-manager"
+  version          = "v1.13.3"
+  create_namespace = true
+
+  set {
+    name  = "installCRDs"
+    value = "true"
+  }
+}
+
+# Priority Classes
+resource "kubernetes_priority_class" "high_priority" {
+  metadata {
+    name = "high-priority"
+  }
+  value          = 1000
+  global_default = false
+  description    = "High priority class for critical workloads"
+}
+
+resource "kubernetes_priority_class" "medium_priority" {
+  metadata {
+    name = "medium-priority"
+  }
+  value          = 500
+  global_default = true
+  description    = "Medium priority class for standard workloads"
+}
+
+resource "kubernetes_priority_class" "low_priority" {
+  metadata {
+    name = "low-priority"
+  }
+  value          = 100
+  global_default = false
+  description    = "Low priority class for non-critical workloads"
+}
+---- resources/versions.tf
+terraform {
+  required_version = ">= 1.13.0"
+
+  required_providers {
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.24"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.12"
+    }
+  }
+}
+---- resources/terraform.tfvars
+cluster_context            = "cex-dev-shared01"
+namespaces                 = ["rtl-dev01", "rtl-dev02"]
+namespace_cpu_requests     = "4"
+namespace_memory_requests  = "8Gi"
+namespace_cpu_limits       = "8"
+namespace_memory_limits    = "16Gi"
+
+---- resources/variables.tf
+variable "cluster_context" {
+  description = "Kubectl context name"
+  type        = string
+  default     = "cex-dev-shared01"
+}
+
+variable "namespaces" {
+  description = "List of namespaces to create"
+  type        = list(string)
+  default     = ["rtl-dev01", "rtl-dev02"]
+}
+
+variable "namespace_cpu_requests" {
+  description = "Total CPU requests quota per namespace"
+  type        = string
+  default     = "4"
+}
+
+variable "namespace_memory_requests" {
+  description = "Total memory requests quota per namespace"
+  type        = string
+  default     = "8Gi"
+}
+
+variable "namespace_cpu_limits" {
+  description = "Total CPU limits quota per namespace"
+  type        = string
+  default     = "8"
+}
+
+variable "namespace_memory_limits" {
+  description = "Total memory limits quota per namespace"
+  type        = string
+  default     = "16Gi"
+}
+---- scripts/cleanup_terraform.sh
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+# Resolve main directory (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MAIN_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+echo "Main directory: ${MAIN_DIR}"
+echo "Cleaning Terraform files..."
+
+for dir in "${MAIN_DIR}"/*/; do
+  # Skip scripts directory
+  [[ "$(basename "$dir")" == "scripts" ]] && continue
+
+  echo "Processing: ${dir}"
+
+  rm -rf \
+    "${dir}/.terraform" \
+    "${dir}/terraform.tfstate" \
+    "${dir}/terraform.tfstate.backup" \
+    "${dir}/.terraform.lock.hcl"
+done
+
+echo "Cleanup complete."
+
+---- scripts/destroy.sh
+#!/bin/bash
+
+set -e
+
+echo "==================================="
+echo "CEX K8s Cluster Destruction"
+echo "==================================="
+
+RED='\033[0;31m'
+NC='\033[0m'
+
+echo -e "${RED}WARNING: This will destroy the entire cluster and all resources! ${NC}"
+read -p "Are you sure?  (yes/no): " -r
+echo
+
+if [[ !  $REPLY =~ ^yes$ ]]; then
+    echo "Aborted."
+    exit 1
+fi
+
+# Step 1: Destroy resources
+echo "Step 1: Destroying Kubernetes resources..."
+cd ../resources
+terraform destroy -auto-approve || true
+cd ..
+
+# Step 2: Destroy cluster
+echo "Step 2: Destroying k3d cluster..."
+cd cluster
+terraform destroy -auto-approve
+cd ..
+
+echo "Cluster destroyed successfully!"
+---- scripts/deploy.sh
+#!/bin/bash
+
+set -e
+
+echo "==================================="
+echo "CEX K8s Cluster Deployment"
+echo "==================================="
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Step 1: Create the cluster
+echo -e "${BLUE}Step 1: Creating k3d cluster...${NC}"
+cd ../cluster
+terraform init
+terraform apply -auto-approve
+cd ..
+
+echo -e "${GREEN}✓ Cluster created successfully${NC}"
+echo ""
+
+# Wait a bit for cluster to stabilize
+echo "Waiting for cluster to stabilize..."
+sleep 10
+
+# Step 2: Deploy resources
+echo -e "${BLUE}Step 2: Deploying Kubernetes resources...${NC}"
+cd resources
+terraform init
+terraform apply -auto-approve
+cd ..
+
+echo -e "${GREEN}✓ Resources deployed successfully${NC}"
+echo ""
+
+# Step 3: Verify deployment
+echo -e "${BLUE}Step 3: Verifying deployment...${NC}"
+echo ""
+
+kubectl get nodes
+echo ""
+
+kubectl get namespaces
+echo ""
+
+echo -e "${GREEN}==================================="
+echo "Deployment Complete!"
+echo "===================================${NC}"
+echo ""
+echo "Cluster Context: cex-dev-shared-01"
+echo "Namespaces:  rtl-dev01, rtl-dev02"
+echo ""
+echo "Useful commands:"
+echo "  kubectl get pods -A"
+echo "  kubectl get pods -n rtl-dev01"
+echo "  kubectl get pods -n rtl-dev02"
+echo "  kubectl get resourcequota -n rtl-dev01"
+echo "  kubectl get resourcequota -n rtl-dev02"
+---- scripts/cleanup.sh
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+echo "Initiating Cleanup..."
+./cleanup_terraform.sh
+rm -rf ~/.kube
+echo "Completed Cleanup"

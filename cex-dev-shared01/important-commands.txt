@@ -1,0 +1,18 @@
+k3d cluster list
+k3d cluster delete cluster-name
+k3d cluster create cluster-name1
+
+k config current-context
+k config get-contexts
+k config set-context context-name
+k config delete-context context-name
+
+k get nodes
+k get ns
+k get pods
+k get pods -A
+k get svc
+k get deploy -A
+k get cm
+k get secrets -A
+s

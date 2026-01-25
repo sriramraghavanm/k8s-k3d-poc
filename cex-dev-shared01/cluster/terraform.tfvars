@@ -1,0 +1,9 @@
+cluster_name           = "cex-dev-shared01"
+server_count           = 3
+agent_count            = 3
+api_port               = 6443
+lb_http_port           = 8081
+lb_https_port          = 8443
+enable_registry        = true
+registry_port          = 5010
+persistent_volume_path = "/tmp/k3d-cex-dev-shared01-storage"
