@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
-# CEX K8s Cluster Deployment — Environment-Aware
+# CEX K8s Cluster Deployment — Environment-Aware with Workspace Isolation
 # ---------------------------------------------------------------------------
 
 GREEN='\033[0;32m'
@@ -20,7 +20,9 @@ usage() {
   echo "Usage: $0 <environment>"
   echo "  Environments: ${VALID_ENVS[*]}"
   echo ""
-  echo "Example: $0 dev"
+  echo "Examples:"
+  echo "  $0 dev    # Deploy dev cluster with rtl-dev01, rtl-dev02"
+  echo "  $0 qa     # Deploy qa cluster with rtl-qa01, rtl-qa02, rtl-qa03"
   exit 1
 }
 
@@ -31,6 +33,11 @@ validate_env() {
   done
   echo -e "${RED}ERROR: Invalid environment '${env}'.${NC}"
   usage
+}
+
+select_workspace() {
+  local env="$1"
+  terraform workspace select "$env" 2>/dev/null || terraform workspace new "$env"
 }
 
 # ---------------------------------------------------------------------------
@@ -52,6 +59,7 @@ echo "==================================="
 echo -e "${BLUE}CEX K8s Cluster Deployment${NC}"
 echo "Environment : ${ENV}"
 echo "Var file    : ${VAR_FILE}"
+echo "Workspace   : ${ENV}"
 echo "==================================="
 echo ""
 
@@ -59,6 +67,7 @@ echo ""
 echo -e "${BLUE}Step 1: Creating k3d cluster...${NC}"
 cd "${ROOT_DIR}/cluster"
 terraform init
+select_workspace "$ENV"
 terraform apply -var-file="${VAR_FILE}" -auto-approve
 echo -e "${GREEN}✓ Cluster created successfully${NC}"
 echo ""
@@ -70,6 +79,7 @@ sleep 10
 echo -e "${BLUE}Step 2: Deploying Kubernetes resources...${NC}"
 cd "${ROOT_DIR}/resources"
 terraform init
+select_workspace "$ENV"
 terraform apply -var-file="${VAR_FILE}" -auto-approve
 echo -e "${GREEN}✓ Resources deployed successfully${NC}"
 echo ""
@@ -91,6 +101,7 @@ echo "===================================${NC}"
 echo ""
 echo "Cluster Name    : ${CLUSTER_NAME}"
 echo "Cluster Context : ${CONTEXT}"
+echo "TF Workspace    : ${ENV}"
 echo ""
 echo "Useful commands:"
 echo "  kubectl --context ${CONTEXT} get pods -A"

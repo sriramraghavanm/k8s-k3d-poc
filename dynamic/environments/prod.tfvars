@@ -9,9 +9,9 @@ lb_https_port      = 8446
 enable_registry    = true
 registry_port      = 5013
 
-namespaces = [
-  { name = "rtl-prod01", cpu_requests = "16", memory_requests = "32Gi", cpu_limits = "32", memory_limits = "64Gi" },
-  { name = "rtl-prod02", cpu_requests = "16", memory_requests = "32Gi", cpu_limits = "32", memory_limits = "64Gi" },
-  { name = "rtl-prod03", cpu_requests = "16", memory_requests = "32Gi", cpu_limits = "32", memory_limits = "64Gi" },
-  { name = "rtl-prod04", cpu_requests = "16", memory_requests = "32Gi", cpu_limits = "32", memory_limits = "64Gi" },
-]
+namespace_prefix          = "rtl"
+namespace_count           = 2
+namespace_cpu_requests    = "16"
+namespace_memory_requests = "32Gi"
+namespace_cpu_limits      = "32"
+namespace_memory_limits   = "64Gi"
