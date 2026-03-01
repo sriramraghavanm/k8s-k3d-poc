@@ -9,8 +9,9 @@ lb_https_port      = 8444
 enable_registry    = true
 registry_port      = 5011
 
-namespaces = [
-  { name = "rtl-qa01", cpu_requests = "4",  memory_requests = "8Gi",  cpu_limits = "8",  memory_limits = "16Gi" },
-  { name = "rtl-qa02", cpu_requests = "4",  memory_requests = "8Gi",  cpu_limits = "8",  memory_limits = "16Gi" },
-  { name = "rtl-qa03", cpu_requests = "4",  memory_requests = "8Gi",  cpu_limits = "8",  memory_limits = "16Gi" },
-]
+namespace_prefix          = "rtl"
+namespace_count           = 3
+namespace_cpu_requests    = "4"
+namespace_memory_requests = "8Gi"
+namespace_cpu_limits      = "8"
+namespace_memory_limits   = "16Gi"

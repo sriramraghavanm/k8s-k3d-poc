@@ -2,8 +2,19 @@ locals {
   cluster_name    = "cex-${var.environment}-${var.cluster_suffix}"
   cluster_context = "k3d-${local.cluster_name}"
 
+  # Dynamically generate namespace names: rtl-dev01, rtl-dev02, ... rtl-devNN
+  namespace_names = [
+    for i in range(1, var.namespace_count + 1) :
+    "${var.namespace_prefix}-${var.environment}${format("%02d", i)}"
+  ]
+
   # Build a map keyed by namespace name for use in for_each
-  namespace_map = { for ns in var.namespaces : ns.name => ns }
+  namespace_map = { for name in local.namespace_names : name => {
+    cpu_requests    = var.namespace_cpu_requests
+    memory_requests = var.namespace_memory_requests
+    cpu_limits      = var.namespace_cpu_limits
+    memory_limits   = var.namespace_memory_limits
+  } }
 
   common_labels = {
     "managed-by"  = "terraform"
@@ -11,12 +22,52 @@ locals {
     "cluster"     = local.cluster_name
   }
 
-  # Environment-specific tuning
+  # Environment-specific tuning for limit ranges and Helm resource defaults
   env_config = {
-    dev  = { pod_security_level = "restricted", max_pod_cpu = "4",  max_pod_memory = "8Gi",  max_container_cpu = "2",  max_container_memory = "4Gi",  default_cpu = "500m", default_memory = "512Mi", default_req_cpu = "100m", default_req_memory = "128Mi" }
-    qa   = { pod_security_level = "restricted", max_pod_cpu = "4",  max_pod_memory = "8Gi",  max_container_cpu = "2",  max_container_memory = "4Gi",  default_cpu = "500m", default_memory = "512Mi", default_req_cpu = "100m", default_req_memory = "128Mi" }
-    stg  = { pod_security_level = "restricted", max_pod_cpu = "8",  max_pod_memory = "16Gi", max_container_cpu = "4",  max_container_memory = "8Gi",  default_cpu = "500m", default_memory = "512Mi", default_req_cpu = "200m", default_req_memory = "256Mi" }
-    prod = { pod_security_level = "restricted", max_pod_cpu = "16", max_pod_memory = "32Gi", max_container_cpu = "8",  max_container_memory = "16Gi", default_cpu = "1",    default_memory = "1Gi",   default_req_cpu = "250m", default_req_memory = "256Mi" }
+    dev = {
+      pod_security_level = "restricted"
+      max_pod_cpu        = "4"
+      max_pod_memory     = "8Gi"
+      max_container_cpu  = "2"
+      max_container_memory = "4Gi"
+      default_cpu        = "500m"
+      default_memory     = "512Mi"
+      default_req_cpu    = "100m"
+      default_req_memory = "128Mi"
+    }
+    qa = {
+      pod_security_level = "restricted"
+      max_pod_cpu        = "4"
+      max_pod_memory     = "8Gi"
+      max_container_cpu  = "2"
+      max_container_memory = "4Gi"
+      default_cpu        = "500m"
+      default_memory     = "512Mi"
+      default_req_cpu    = "100m"
+      default_req_memory = "128Mi"
+    }
+    stg = {
+      pod_security_level = "restricted"
+      max_pod_cpu        = "8"
+      max_pod_memory     = "16Gi"
+      max_container_cpu  = "4"
+      max_container_memory = "8Gi"
+      default_cpu        = "500m"
+      default_memory     = "512Mi"
+      default_req_cpu    = "200m"
+      default_req_memory = "256Mi"
+    }
+    prod = {
+      pod_security_level = "restricted"
+      max_pod_cpu        = "16"
+      max_pod_memory     = "32Gi"
+      max_container_cpu  = "8"
+      max_container_memory = "16Gi"
+      default_cpu        = "1"
+      default_memory     = "1Gi"
+      default_req_cpu    = "250m"
+      default_req_memory = "256Mi"
+    }
   }
 
   env = local.env_config[var.environment]
@@ -47,10 +98,10 @@ resource "kubernetes_namespace" "namespaces" {
     name = each.key
 
     labels = merge(local.common_labels, {
-      "name"                                 = each.key
-      "pod-security.kubernetes.io/enforce"   = local.env.pod_security_level
-      "pod-security.kubernetes.io/audit"     = local.env.pod_security_level
-      "pod-security.kubernetes.io/warn"      = local.env.pod_security_level
+      "name"                               = each.key
+      "pod-security.kubernetes.io/enforce" = local.env.pod_security_level
+      "pod-security.kubernetes.io/audit"   = local.env.pod_security_level
+      "pod-security.kubernetes.io/warn"    = local.env.pod_security_level
     })
 
     annotations = {
@@ -62,7 +113,7 @@ resource "kubernetes_namespace" "namespaces" {
 }
 
 # ---------------------------------------------------------------------------
-# Resource Quotas (per-namespace values from the variable)
+# Resource Quotas (per-namespace values from variables)
 # ---------------------------------------------------------------------------
 resource "kubernetes_resource_quota" "namespace_quotas" {
   for_each   = local.namespace_map

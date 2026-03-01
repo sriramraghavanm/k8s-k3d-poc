@@ -18,6 +18,7 @@ for dir in "${MAIN_DIR}"/*/; do
     "${dir}/.terraform" \
     "${dir}/terraform.tfstate" \
     "${dir}/terraform.tfstate.backup" \
+    "${dir}/terraform.tfstate.d" \
     "${dir}/.terraform.lock.hcl"
 done
 

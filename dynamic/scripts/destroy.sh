@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
-# CEX K8s Cluster Destruction — Environment-Aware
+# CEX K8s Cluster Destruction — Environment-Aware with Workspace Isolation
 # ---------------------------------------------------------------------------
 
 RED='\033[0;31m'
@@ -30,6 +30,17 @@ validate_env() {
   usage
 }
 
+select_workspace() {
+  local env="$1"
+  if ! terraform workspace select "$env" 2>/dev/null; then
+    echo -e "${RED}ERROR: Workspace '${env}' does not exist. Was this environment ever deployed?${NC}"
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 [[ $# -lt 1 ]] && usage
 
 ENV="$1"
@@ -48,9 +59,11 @@ echo "==================================="
 echo "CEX K8s Cluster Destruction"
 echo "Environment : ${ENV}"
 echo "Cluster     : ${CLUSTER_NAME}"
+echo "TF Workspace: ${ENV}"
 echo "==================================="
 echo ""
-echo -e "${RED}WARNING: This will destroy the ${ENV} cluster and ALL its resources!${NC}"
+echo -e "${RED}WARNING: This will destroy ONLY the '${ENV}' cluster and its resources!${NC}"
+echo -e "${RED}Other environments will NOT be affected.${NC}"
 read -p "Type 'yes' to confirm: " -r
 echo
 
@@ -62,11 +75,16 @@ fi
 # Step 1 — Resources
 echo "Step 1: Destroying Kubernetes resources..."
 cd "${ROOT_DIR}/resources"
+terraform init
+select_workspace "$ENV"
 terraform destroy -var-file="${VAR_FILE}" -auto-approve || true
 
 # Step 2 — Cluster
 echo "Step 2: Destroying k3d cluster..."
 cd "${ROOT_DIR}/cluster"
+terraform init
+select_workspace "$ENV"
 terraform destroy -var-file="${VAR_FILE}" -auto-approve
 
 echo -e "${GREEN}Cluster '${CLUSTER_NAME}' destroyed successfully!${NC}"
+echo "Other environments remain untouched."

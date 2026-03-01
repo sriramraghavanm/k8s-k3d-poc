@@ -92,7 +92,60 @@ variable "registry_port" {
 }
 
 variable "persistent_volume_path" {
-  description = "Override for the host path used for persistent volumes. Leave empty to auto-generate from environment."
+  description = "Override for the host path used for persistent volumes. Leave empty to auto-generate."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Sink variables — declared so the shared -var-file does not produce
+# "undeclared variable" errors. These are unused in the cluster module.
+# ---------------------------------------------------------------------------
+
+variable "namespace_prefix" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = string
+  default     = ""
+}
+
+variable "namespace_count" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = number
+  default     = 0
+}
+
+variable "namespace_cpu_requests" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = string
+  default     = ""
+}
+
+variable "namespace_memory_requests" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = string
+  default     = ""
+}
+
+variable "namespace_cpu_limits" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = string
+  default     = ""
+}
+
+variable "namespace_memory_limits" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = string
+  default     = ""
+}
+
+variable "ingress_nginx_version" {
+  description = "Unused in cluster module — declared to accept shared var-file"
+  type        = string
+  default     = ""
+}
+
+variable "cert_manager_version" {
+  description = "Unused in cluster module — declared to accept shared var-file"
   type        = string
   default     = ""
 }
